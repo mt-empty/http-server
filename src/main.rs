@@ -1,4 +1,5 @@
 use std::net::{TcpListener, TcpStream};
+use std::rc::Rc;
 use std::{
     fmt::Display,
     io::{Read, Write},
@@ -114,31 +115,32 @@ enum HttpVersion {
 }
 
 #[derive(Clone)]
-struct Header<'a> {
+struct Header {
     key: SupprotedHeader,
-    value: &'a str,
+    value: Rc<String>,
 }
 
-impl<'a> Header<'a> {
-    fn new(key: SupprotedHeader, value: &'a str) -> Header<'a> {
+impl Header {
+    fn new(key: SupprotedHeader, value: Rc<String>) -> Header {
         Header { key, value }
     }
-    fn parse_headers(headers: Vec<(&'a str, &'a str)>) -> Vec<Header<'a>> {
+    fn parse_headers(headers: Vec<(&str, &str)>) -> Vec<Header> {
         headers
             .iter()
             .filter_map(|(key, value)| {
-                SupprotedHeader::from_str(key)
-                    .ok()
-                    .map(|key| Header { key, value })
+                SupprotedHeader::from_str(key).ok().map(|key| Header {
+                    key,
+                    value: Rc::new(value.to_string()),
+                })
             })
-            .collect::<Vec<Header<'a>>>()
+            .collect::<Vec<Header>>()
     }
 }
 struct HttpRequest<'a> {
     method: HttpMethod,
     path: &'a str,
     _version: HttpVersion,
-    headers: Vec<Header<'a>>,
+    headers: Vec<Header>,
     body: String,
 }
 
@@ -147,7 +149,7 @@ impl<'a> HttpRequest<'a> {
         self.headers
             .iter()
             .find(|header| header.key == key)
-            .map(|header| header.value)
+            .map(|header| header.value.as_str())
     }
 
     fn new(http_request: &'a str) -> Result<HttpRequest> {
@@ -176,20 +178,20 @@ impl<'a> HttpRequest<'a> {
     }
 }
 
-struct HttpResponse<'a> {
+struct HttpResponse {
     status_code: StatusCode,
-    headers: Vec<Header<'a>>,
+    headers: Vec<Header>,
     body: String,
     encoding_type: Option<SupportedEncoding>,
 }
 
-impl<'a> HttpResponse<'a> {
+impl HttpResponse {
     fn new(
         status_code: StatusCode,
-        headers: Vec<Header<'a>>,
+        headers: Vec<Header>,
         body: String,
         encoding_type: Option<SupportedEncoding>,
-    ) -> HttpResponse<'a> {
+    ) -> HttpResponse {
         HttpResponse {
             status_code,
             headers,
@@ -212,11 +214,10 @@ impl<'a> HttpResponse<'a> {
         }
     }
 
-    fn create_content_length_header<T: AsRef<[u8]>>(body: T) -> Header<'a> {
-        let content_length = body.as_ref().len().to_string();
+    fn create_content_length_header<T: AsRef<[u8]>>(body: T) -> Header {
         Header::new(
             SupprotedHeader::ContentLength,
-            Box::leak(content_length.into_boxed_str()),
+            Rc::new(body.as_ref().len().to_string()),
         )
     }
     fn body_to_bytes(self) -> Vec<u8> {
@@ -234,20 +235,18 @@ impl<'a> HttpResponse<'a> {
             .iter()
             .any(|header| header.key == SupprotedHeader::ContentType)
         {
-            let content_type_string = ContentType::TextPlain.to_string();
             headers.push(Header::new(
                 SupprotedHeader::ContentType,
-                Box::leak(content_type_string.into_boxed_str()),
+                Rc::new(ContentType::TextPlain.to_string()),
             ));
         }
 
         // Gzipped data is compressed and may contain byte sequences that are not valid UTF-8 characters.
         // Therefore, interpreting it as a UTF-8 string with String::from_utf8(compressed_bytes).unwrap() will not work.
         let body = if let Some(encoding_type) = self.encoding_type {
-            let encoding_str = SupportedEncoding::Gzip.to_string();
             headers.push(Header::new(
                 SupprotedHeader::ContentEncoding,
-                Box::leak(encoding_str.into_boxed_str()),
+                Rc::new(SupportedEncoding::Gzip.to_string()),
             ));
             self.compress_string(encoding_type)
         } else {
@@ -269,7 +268,7 @@ impl<'a> HttpResponse<'a> {
     }
 }
 
-impl Display for HttpResponse<'_> {
+impl Display for HttpResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status_line = format!(
             "{} {} {}",
@@ -365,10 +364,10 @@ fn handle_client(mut stream: TcpStream, directory: String) {
             let file_path = format!("{}{}", directory, &path[7..]);
             match std::fs::read_to_string(&file_path) {
                 Ok(content) => {
-                    response_headers.push(Header::new(SupprotedHeader::ContentType, {
-                        let content_type = ContentType::ApplicationOctetStream.to_string();
-                        Box::leak(content_type.into_boxed_str())
-                    }));
+                    response_headers.push(Header::new(
+                        SupprotedHeader::ContentType,
+                        Rc::new(ContentType::ApplicationOctetStream.to_string()),
+                    ));
                     HttpResponse::new(StatusCode::Ok, response_headers, content, content_encoding)
                 }
                 Err(_) => HttpResponse::new(
