@@ -4,7 +4,7 @@ use std::{
     fmt::Display,
     io::{Read, Write},
     str::FromStr,
-    thread, vec,
+    thread,
 };
 
 use anyhow::Result;
@@ -32,7 +32,7 @@ enum StatusCode {
 }
 
 #[derive(EnumString, Display, Debug, Clone, Copy, PartialEq, Eq)]
-enum SupprotedHeader {
+enum SupportedHeader {
     #[strum(serialize = "Content-Type")]
     ContentType,
     #[strum(serialize = "Content-Length")]
@@ -69,7 +69,7 @@ impl SupportedEncoding {
     fn retrieve_supported_encodings(headers: &[Header]) -> Vec<SupportedEncoding> {
         if let Some(encoding_header) = headers
             .iter()
-            .find(|h| h.key == SupprotedHeader::AcceptEncoding)
+            .find(|h| h.key == SupportedHeader::AcceptEncoding)
         {
             let encoding_values = encoding_header.value.trim();
             encoding_values
@@ -116,19 +116,19 @@ enum HttpVersion {
 
 #[derive(Clone)]
 struct Header {
-    key: SupprotedHeader,
+    key: SupportedHeader,
     value: Rc<String>,
 }
 
 impl Header {
-    fn new(key: SupprotedHeader, value: Rc<String>) -> Header {
+    fn new(key: SupportedHeader, value: Rc<String>) -> Header {
         Header { key, value }
     }
     fn parse_headers(headers: Vec<(&str, &str)>) -> Vec<Header> {
         headers
             .iter()
             .filter_map(|(key, value)| {
-                SupprotedHeader::from_str(key).ok().map(|key| Header {
+                SupportedHeader::from_str(key).ok().map(|key| Header {
                     key,
                     value: Rc::new(value.to_string()),
                 })
@@ -145,7 +145,7 @@ struct HttpRequest<'a> {
 }
 
 impl<'a> HttpRequest<'a> {
-    fn get_header_value(&self, key: SupprotedHeader) -> Option<&str> {
+    fn get_header_value(&self, key: SupportedHeader) -> Option<&str> {
         self.headers
             .iter()
             .find(|header| header.key == key)
@@ -216,7 +216,7 @@ impl HttpResponse {
 
     fn create_content_length_header<T: AsRef<[u8]>>(body: T) -> Header {
         Header::new(
-            SupprotedHeader::ContentLength,
+            SupportedHeader::ContentLength,
             Rc::new(body.as_ref().len().to_string()),
         )
     }
@@ -233,10 +233,10 @@ impl HttpResponse {
         if !self
             .headers
             .iter()
-            .any(|header| header.key == SupprotedHeader::ContentType)
+            .any(|header| header.key == SupportedHeader::ContentType)
         {
             headers.push(Header::new(
-                SupprotedHeader::ContentType,
+                SupportedHeader::ContentType,
                 Rc::new(ContentType::TextPlain.to_string()),
             ));
         }
@@ -245,8 +245,8 @@ impl HttpResponse {
         // Therefore, interpreting it as a UTF-8 string with String::from_utf8(compressed_bytes).unwrap() will not work.
         let body = if let Some(encoding_type) = self.encoding_type {
             headers.push(Header::new(
-                SupprotedHeader::ContentEncoding,
-                Rc::new(SupportedEncoding::Gzip.to_string()),
+                SupportedHeader::ContentEncoding,
+                Rc::new(encoding_type.to_string()),
             ));
             self.compress_string(encoding_type)
         } else {
@@ -307,7 +307,7 @@ fn extract_request_headers(header_line: &str) -> Vec<(&str, &str)> {
     headers
         .into_iter()
         .map(|header| {
-            let (key, value) = header.split_once(":").unwrap();
+            let (key, value) = header.split_once(":").unwrap_or_default();
             (key, value)
         })
         .collect()
@@ -315,7 +315,16 @@ fn extract_request_headers(header_line: &str) -> Vec<(&str, &str)> {
 
 fn handle_client(mut stream: TcpStream, directory: String) {
     let mut buffer = [0; MAX_BUFFER_SIZE];
-    let bytes_read = stream.read(&mut buffer).unwrap();
+    let bytes_read = match stream.read(&mut buffer) {
+        Ok(bytes_read) => bytes_read,
+        Err(e) => {
+            eprintln!("Failed to read from stream: {}", e);
+            let response =
+                HttpResponse::new(StatusCode::InternalServerError, vec![], e.to_string(), None);
+            stream.write_all(&response.body_to_bytes()).unwrap();
+            return;
+        }
+    };
 
     let http_request = String::from_utf8_lossy(&buffer[..bytes_read]);
     println!("Received request: {}", http_request);
@@ -323,6 +332,7 @@ fn handle_client(mut stream: TcpStream, directory: String) {
     let request = match HttpRequest::new(&http_request) {
         Ok(request) => request,
         Err(e) => {
+            println!("Failed to parse request: {}", e);
             let response = HttpResponse::new(StatusCode::BadRequest, vec![], e.to_string(), None);
             stream.write_all(&response.body_to_bytes()).unwrap();
             return;
@@ -349,7 +359,7 @@ fn handle_client(mut stream: TcpStream, directory: String) {
         ),
         (HttpMethod::Get, "/user-agent") => {
             let user_agent = request
-                .get_header_value(SupprotedHeader::UserAgent)
+                .get_header_value(SupportedHeader::UserAgent)
                 .unwrap_or(&StatusCode::BadRequest.to_string())
                 .trim()
                 .to_string();
@@ -365,15 +375,15 @@ fn handle_client(mut stream: TcpStream, directory: String) {
             match std::fs::read_to_string(&file_path) {
                 Ok(content) => {
                     response_headers.push(Header::new(
-                        SupprotedHeader::ContentType,
+                        SupportedHeader::ContentType,
                         Rc::new(ContentType::ApplicationOctetStream.to_string()),
                     ));
                     HttpResponse::new(StatusCode::Ok, response_headers, content, content_encoding)
                 }
-                Err(_) => HttpResponse::new(
+                Err(e) => HttpResponse::new(
                     StatusCode::NotFound,
                     response_headers,
-                    StatusCode::NotFound.to_string(),
+                    e.to_string(),
                     content_encoding,
                 ),
             }
@@ -388,10 +398,10 @@ fn handle_client(mut stream: TcpStream, directory: String) {
                     StatusCode::Created.to_string(),
                     content_encoding,
                 ),
-                Err(_) => HttpResponse::new(
+                Err(e) => HttpResponse::new(
                     StatusCode::InternalServerError,
                     response_headers,
-                    StatusCode::InternalServerError.to_string(),
+                    e.to_string(),
                     content_encoding,
                 ),
             }

@@ -20,19 +20,19 @@ This is a simple HTTP server written in Rust. It supports basic HTTP methods suc
 - **Description**: Returns the `User-Agent` header value from the request.
 - **Response**: 
   - Status: `200 OK` if `User-Agent` is present, otherwise `400 Bad Request`
-  - Body: `User-Agent` value or `400 Bad Request`
+  - Body: `User-Agent` value or error message
 
 ### 4. `GET /files/{filename}`
 - **Description**: Serves the file specified by `{filename}` from the specified directory.
 - **Response**: 
   - Status: `200 OK` if file is found, otherwise `404 Not Found`
-  - Body: File content or `404 Not Found`
+  - Body: File content or error message
 
 ### 5. `POST /files/{filename}`
 - **Description**: Saves the request body as a file specified by `{filename}` in the specified directory.
 - **Response**: 
   - Status: `201 Created` if file is successfully created, otherwise `500 Internal Server Error`
-  - Body: `201 Created` or `500 Internal Server Error`
+  - Body: `201 Created` or error message
 
 ## Usage
 
