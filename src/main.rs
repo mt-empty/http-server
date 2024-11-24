@@ -321,125 +321,68 @@ fn handle_client(mut stream: TcpStream, directory: String) {
     let http_request = String::from_utf8_lossy(&buffer[..bytes_read]);
     println!("Received request: {}", http_request);
 
-    let HttpRequest {
-        method,
-        path,
-        headers: request_headers,
-        body: request_body,
-        ..
-    } = match HttpRequest::new(&http_request) {
+    let request = match HttpRequest::new(&http_request) {
         Ok(request) => request,
         Err(e) => {
-            let http_response =
-                HttpResponse::new(StatusCode::BadRequest, vec![], e.to_string(), None);
-            stream.write_all(&http_response.body_to_bytes()).unwrap();
+            let response = HttpResponse::new(StatusCode::BadRequest, vec![], e.to_string(), None);
+            stream.write_all(&response.body_to_bytes()).unwrap();
             return;
         }
     };
 
     let mut response_headers = vec![];
+    let content_encoding = SupportedEncoding::retrieve_supported_encodings(&request.headers)
+        .into_iter()
+        .find(|&encoding| encoding == SupportedEncoding::Gzip);
 
-    let mut content_encoding: Option<SupportedEncoding> = None;
-
-    // if headers container Accept-Encoding
-    let supported_content_encoding =
-        SupportedEncoding::retrieve_supported_encodings(&request_headers);
-
-    if supported_content_encoding.contains(&SupportedEncoding::Gzip) {
-        content_encoding = Some(SupportedEncoding::Gzip);
-    }
-
-    match (method, path) {
-        (HttpMethod::Get, "/") => {
-            let http_response = HttpResponse::new(
-                StatusCode::Ok,
-                response_headers,
-                "Hello, World!".to_string(),
-                content_encoding,
-            );
-            println!("Response: {}", http_response);
-            stream.write_all(&http_response.body_to_bytes()).unwrap();
-        }
-        (HttpMethod::Get, path) if path.starts_with("/echo/") => {
-            let body = &path[6..];
-
-            let http_response = HttpResponse::new(
-                StatusCode::Ok,
-                response_headers,
-                body.to_string(),
-                content_encoding,
-            );
-
-            println!("Response: {}", http_response);
-            stream.write_all(&http_response.body_to_bytes()).unwrap();
-        }
+    let response = match (request.method, request.path) {
+        (HttpMethod::Get, "/") => HttpResponse::new(
+            StatusCode::Ok,
+            response_headers,
+            "Hello, World!".to_string(),
+            content_encoding,
+        ),
+        (HttpMethod::Get, path) if path.starts_with("/echo/") => HttpResponse::new(
+            StatusCode::Ok,
+            response_headers,
+            path[6..].to_string(),
+            content_encoding,
+        ),
         (HttpMethod::Get, "/user-agent") => {
-            let user_agent_value = request_headers
-                .iter()
-                .find(|header| header.key == SupprotedHeader::UserAgent)
-                .map(|header| header.value.trim());
-
-            let http_response = match user_agent_value {
-                Some(user_agent) => HttpResponse::new(
-                    StatusCode::Ok,
-                    response_headers,
-                    user_agent.to_string(),
-                    content_encoding,
-                ),
-                None => HttpResponse::new(
-                    StatusCode::BadRequest,
-                    response_headers,
-                    "Bad Request".to_string(),
-                    content_encoding,
-                ),
+            let user_agent = request
+                .get_header_value(SupprotedHeader::UserAgent)
+                .unwrap_or(&StatusCode::BadRequest.to_string())
+                .trim()
+                .to_string();
+            let status = if user_agent == StatusCode::BadRequest.to_string() {
+                StatusCode::BadRequest
+            } else {
+                StatusCode::Ok
             };
-
-            println!("Response: {}", http_response);
-            stream.write_all(&http_response.body_to_bytes()).unwrap();
+            HttpResponse::new(status, response_headers, user_agent, content_encoding)
         }
         (HttpMethod::Get, path) if path.starts_with("/files/") => {
             let file_path = format!("{}{}", directory, &path[7..]);
-
-            let file_content = match std::fs::read_to_string(file_path) {
-                Ok(content) => content,
-                Err(_) => {
-                    let http_response = HttpResponse::new(
-                        StatusCode::NotFound,
-                        response_headers,
-                        StatusCode::NotFound.to_string(),
-                        content_encoding,
-                    );
-                    stream.write_all(&http_response.body_to_bytes()).unwrap();
-                    return;
+            match std::fs::read_to_string(&file_path) {
+                Ok(content) => {
+                    response_headers.push(Header::new(SupprotedHeader::ContentType, {
+                        let content_type = ContentType::ApplicationOctetStream.to_string();
+                        Box::leak(content_type.into_boxed_str())
+                    }));
+                    HttpResponse::new(StatusCode::Ok, response_headers, content, content_encoding)
                 }
-            };
-            let content_type_string = ContentType::ApplicationOctetStream.to_string();
-            let content_type = content_type_string.as_str();
-            response_headers.push(Header::new(SupprotedHeader::ContentType, content_type));
-
-            let http_response = HttpResponse::new(
-                StatusCode::Ok,
-                response_headers,
-                file_content,
-                content_encoding,
-            );
-
-            println!("Response: {}", http_response);
-            stream.write_all(&http_response.body_to_bytes()).unwrap();
+                Err(_) => HttpResponse::new(
+                    StatusCode::NotFound,
+                    response_headers,
+                    StatusCode::NotFound.to_string(),
+                    content_encoding,
+                ),
+            }
         }
         (HttpMethod::Post, path) if path.starts_with("/files/") => {
             let file_path = format!("{}{}", directory, &path[7..]);
-
-            let content_length = request_headers
-                .iter()
-                .find(|header| header.key == SupprotedHeader::ContentLength)
-                .map(|header| header.value.trim())
-                .unwrap();
-
-            let content_length: usize = content_length.parse().unwrap();
-            let body = &request_body[..content_length];
-
-            let http_response: HttpResponse = match std::fs::write(file_path, body) {
+            let body = &request.body;
+            match std::fs::write(&file_path, body) {
                 Ok(_) => HttpResponse::new(
                     StatusCode::Created,
                     response_headers,
@@ -449,25 +392,22 @@ fn handle_client(mut stream: TcpStream, directory: String) {
                 Err(_) => HttpResponse::new(
                     StatusCode::InternalServerError,
                     response_headers,
-                    "Internal Server Error".to_string(),
+                    StatusCode::InternalServerError.to_string(),
                     content_encoding,
                 ),
-            };
-            println!("Response: {}", http_response);
-            stream.write_all(&http_response.body_to_bytes()).unwrap();
+            }
         }
-        _ => {
-            let http_response = HttpResponse::new(
-                StatusCode::NotFound,
-                request_headers,
-                StatusCode::NotFound.to_string(),
-                content_encoding,
-            );
-            println!("Response: {}", http_response);
-            stream.write_all(&http_response.body_to_bytes()).unwrap();
-        }
-    }
-    stream.flush().unwrap()
+        _ => HttpResponse::new(
+            StatusCode::NotFound,
+            response_headers,
+            StatusCode::NotFound.to_string(),
+            content_encoding,
+        ),
+    };
+
+    println!("Response: {}", response);
+    stream.write_all(&response.body_to_bytes()).unwrap();
+    stream.flush().unwrap();
 }
 
 fn main() {
