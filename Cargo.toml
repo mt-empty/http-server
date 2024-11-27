@@ -6,7 +6,12 @@ edition = "2021"
 rust-version = "1.80"
 
 [dependencies]
-flate2 = "1.0.35"                                # compression
+flate2 = "1.0.35"                                           # compression
 strum = "0.26"
 strum_macros = "0.26"
 anyhow = "1.0"
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["blocking"] }     # HTTP client
+tokio = { version = "1", features = ["full"] }              # async runtime
+once_cell = "1.20"                                          # lazy static

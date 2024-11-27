@@ -32,7 +32,7 @@ This is a simple HTTP server written in Rust. It supports basic HTTP methods suc
 - **Description**: Saves the request body as a file specified by `{filename}` in the specified directory.
 - **Response**: 
   - Status: `201 Created` if file is successfully created, otherwise `500 Internal Server Error`
-  - Body: `201 Created` or error message
+  - Body: `Created` or error message
 
 ## Usage
 
